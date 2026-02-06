@@ -27,8 +27,8 @@ The intention was to add it for my **Ender 3 V3 SE** but it can work for any pri
 
 | # | Component | Specification | Qty | Notes |
 |---|---|---|---|---|
-| 1 | NexGen3D Chamber Heater | 24V PTC 200W + 24V 7530 blower fan | 1 | Already owned |
-| 2 | Raspberry Pi Pico 2 | RP2350 | 1 | Already owned |
+| 1 | NexGen3D Chamber Heater | 24V PTC 200W + 24V 7530 blower fan | 1 | https://www.printables.com/model/1424592-nexgen3d-chamber-heater-v2 or https://www.printables.com/model/1424592-nexgen3d-chamber-heater-v2 or you can use anything you want with a 24V fan+heater |
+| 2 | Raspberry Pi Pico 2 | RP2350 | 1 | |
 | 3 | MOSFET module (heater) | AOD4184A, 36V/15A/400W, 3.3V logic | 1 | PWM capable, logic-level |
 | 4 | MOSFET module (fan) | AOD4184A, 36V/15A/400W, 3.3V logic | 1 | Same module as above |
 | 5 | Power supply (heater) | 24V, 250W minimum (350W recommended) | 1 | e.g. Meanwell LRS-350-24 |
@@ -37,7 +37,7 @@ The intention was to add it for my **Ender 3 V3 SE** but it can work for any pri
 | 8 | Thermal cutoff switch | KSD9700 75°C NC (normally closed) | 1 | Hardware safety |
 | 9 | Inline fuse holder + fuse | Glass fuse 5x20mm, 15A | 1 | 200W/24V = 8.3A + inrush margin |
 | 10 | Wire | 1.5 mm² (≥18AWG), silicone/PTFE insulated | ~2m | Heat resistant insulation |
-| 11 | Dupont connectors/pins | For Pico 2 GPIO connections | misc | — |
+| 11 | Dupont/JST-HR connectors/pins | For Pico 2 GPIO connections | misc | — |
 
 ### Component Notes
 
@@ -93,10 +93,10 @@ on 2 shared wires. You must separate them into 4 independent wires.
 ```
 ╔═══════════════════════════════════════════════════════════════════════╗
 ║                                                                       ║
-║   MAINS 230V ──→ [5V PSU] ──→ Raspberry Pi ──USB──→ Pico 2          ║
-║   MAINS 230V ──→ [24V PSU] ──→ Heater circuit (via MOSFETs)         ║
+║   MAINS 230V ──→ [5V PSU] ──→ Raspberry Pi ──USB──→ Pico 2            ║
+║   MAINS 230V ──→ [24V PSU] ──→ Heater circuit (via MOSFETs)           ║
 ║                       │                                               ║
-║                      GND ──────────────────→ Pico 2 GND pin          ║
+║                      GND ──────────────────→ Pico 2 GND pin           ║
 ║                                              (one wire!)              ║
 ╚═══════════════════════════════════════════════════════════════════════╝
 ```
@@ -107,50 +107,50 @@ on 2 shared wires. You must separate them into 4 independent wires.
                         24V PSU (dedicated, 250W+)
                        ┌────────┴────────┐
                       +24V              GND ─────────────────┐
-                       │                 │                    │
-           ┌───────────┤                 │                    │
-           │           │                 │                    │
-       [FUSE 15A]      │                 │                    │
-           │           │                 │                    │
-       [KSD9700]       │                 │                    │
-        75°C NC        │                 │                    │
-           │           │                 │                    │
-           │           │                 │                    │
-         PTC +       FAN +               │                    │
-           │           │                 │                    │
-      [ HEATER ]  [ FAN 7530 ]           │                    │
-       PTC 200W     ~3-5W               │                    │
-           │           │                 │                    │
-         PTC -       FAN -               │                    │
-           │           │                 │                    │
-        ┌──┘           └──┐              │                    │
-        │                 │              │                    │
-    LOAD+ LOAD-      LOAD+ LOAD-        │                    │
-    ┌─────────┐      ┌─────────┐        │                    │
-    │ MOSFET  │      │ MOSFET  │        │                    │
-    │ MODULE  │      │ MODULE  │        │                    │
-    │   M1    │      │   M2    │        │                    │
-    └────┬────┘      └────┬────┘        │                    │
-     SIG│VCC│GND     SIG│VCC│GND        │                    │
-      │  │   │        │  │   │          │                    │
-      │  │   │        │  │   │          │                    │
-    ┌─┴──┴───┴────────┴──┴───┴──────────┴────────────────────┤
-    │                                                         │
-    │                 RASPBERRY PI PICO 2                      │
-    │                                                         │
+                       │                 │                   │
+           ┌───────────┤                 │                   │
+           │           │                 │                   │
+       [FUSE 15A]      │                 │                   │
+           │           │                 │                   │
+       [KSD9700]       │                 │                   │
+        75°C NC        │                 │                   │
+           │           │                 │                   │
+           │           │                 │                   │
+         PTC +       FAN +               │                   │
+           │           │                 │                   │
+      [ HEATER ]  [ FAN 7530 ]           │                   │
+       PTC 200W     ~3-5W                │                   │
+           │           │                 │                   │
+         PTC -       FAN -               │                   │
+           │           │                 │                   │
+        ┌──┘           └──┐              │                   │
+        │                 │              │                   │
+    LOAD+ LOAD-      LOAD+ LOAD-         │                   │
+    ┌─────────┐      ┌─────────┐         │                   │
+    │ MOSFET  │      │ MOSFET  │         │                   │
+    │ MODULE  │      │ MODULE  │         │                   │
+    │   M1    │      │   M2    │         │                   │
+    └────┬────┘      └────┬────┘         │                   │
+     SIG│VCC│GND     SIG│VCC│GND         │                   │
+      │  │   │        │  │   │           │                   │
+      │  │   │        │  │   │           │                   │
+    ┌─┴──┴───┴────────┴──┴───┴───────────┴───────────────────┤
+    │                                                        │
+    │                 RASPBERRY PI PICO 2                    │
+    │                                                        │
     │  GP15 ──→ SIG M1 (heater MOSFET)                       │
     │  GP14 ──→ SIG M2 (fan MOSFET)                          │
     │  3.3V ──→ VCC M1 + VCC M2 + pull-up resistor           │
-    │                                                         │
-    │  GP26 (ADC0) ←── ┬── [NTC 100K 3950] ──→ GND          │
-    │                   │                                     │
+    │                                                        │
+    │  GP26 (ADC0) ←── ┬── [NTC 100K 3950] ──→ GND           │
+    │                   │                                    │
     │  3.3V ──→ [4.7kΩ resistor] ──→ ┘                       │
-    │                                                         │
-    │  GND ──→ GND M1 + GND M2 + 24V PSU GND                │
-    │                                                         │
-    │  USB ←──────────────────────────────→ Raspberry Pi      │
-    │                                       (power + data)    │
-    └─────────────────────────────────────────────────────────┘
+    │                                                        │
+    │  GND ──→ GND M1 + GND M2 + 24V PSU GND                 │
+    │                                                        │
+    │  USB ←──────────────────────────────→ Raspberry Pi     │
+    │                                       (power + data)   │
+    └────────────────────────────────────────────────────────┘
 ```
 
 ### Heater Line Detail (series chain)
@@ -434,6 +434,45 @@ The system has 5 independent safety layers:
 - [ ] Run PID calibration: `PID_CALIBRATE HEATER=chamber_heater TARGET=55`
 - [ ] Save results: `SAVE_CONFIG`
 - [ ] Verify cooldown: set target to 0, confirm fan stays on until chamber <35°C
+
+---
+
+## Tips & Tricks
+
+### Enclosure Insulation
+
+Line the inside of your enclosure panels with **self-adhesive thermal shield mat** (aluminum + fiber,
+rated for high temperatures, available as automotive heat shields). A 50x100cm sheet is enough
+to cover the back and side panels. This reflects radiant heat back into the chamber, reduces heat
+loss, speeds up heating, and lowers power consumption.
+
+### Back Panel Material
+
+If your back panel is foam PVC (Forex/Palight), replace it — foam PVC deforms at ~60°C.
+Good alternatives:
+- **HDF / hardboard (płyta pilśniowa)** — dense, rigid, handles 60-70°C well, cheap
+- **Plywood 3-4mm** — similar properties to HDF
+
+Line the inside with thermal mat regardless of material.
+
+### Heater Mounting
+
+- Cut an opening in the back panel and mount a **3mm aluminum plate (~150x100mm)** as a heater
+  mounting bracket. Screw the NexGen3D bracket to the aluminum plate.
+- Aluminum handles any temperature and provides a rigid, fireproof mount point.
+- Available at any hardware store (Castorama, Leroy Merlin) for a few PLN.
+
+### Heater Placement
+
+- **Mount at the top of the back panel** — hot air rises naturally and circulates through the chamber.
+- **Aim the outlet forward/downward** — toward the print zone, not directly at a wall.
+- **Do not mount at the bottom** — hot air rises anyway, and you'd unnecessarily heat the bed from below.
+
+### NTC Sensor Placement
+
+- Mount the NTC thermistor on the **opposite side of the chamber** from the heater.
+- This measures actual chamber temperature, not the hot air stream from the heater outlet.
+- Avoid placing it near the heated bed or near enclosure openings (drafts cause false readings).
 
 ---
 
