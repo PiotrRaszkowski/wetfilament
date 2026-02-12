@@ -1,515 +1,472 @@
-# 24V Chamber Heater Control with Raspberry Pi Pico 2 & Klipper
+# Universal 24V Chamber Heater Control with Raspberry Pi Pico 2 & Klipper
 
 ## Project Overview
 
-Adding a **NexGen3D Chamber Heater** (24V PTC + fan) to an **Ender 3 V3 SE** running Klipper,
-controlled by a **Raspberry Pi Pico 2** as a secondary MCU.
+This project adds active chamber heating to an **Ender 3 V3 SE** (or any Klipper-based printer)
+using a **24V PTC heater** controlled by a **Raspberry Pi Pico 2** as a secondary MCU.
 
-### Key Design Decisions
+### Inspiration & Source Projects
 
-- **24V DC** instead of 115V/220V AC — no mains voltage inside the printer enclosure
-- **Dedicated 24V PSU** for the heater — does not load the printer's power supply
-- **MOSFET modules** instead of SSR — simpler and cheaper for DC
-- **Pico 2** as Klipper MCU — full PID control, temperature monitoring, GCode integration
-- **Separate fan/heater wiring** — enables safe cooldown after heating
+This design is a **hybrid of two Printables projects**, adapted for safe 24V DC operation:
+
+1. **[NexGen3D Chamber Heater](https://www.printables.com/model/863675-nexgen3d-chamber-heater)** by NexGen-3D-Printing
+   — Provides the **physical heater assembly**: ABS housing, 24V PTC element, 7530 blower fan,
+   and the mounting bracket. Printed in ABS-CF (minimum ABS). No control system included —
+   the author suggests connecting it directly to a spare PSU or using a relay.
+
+2. **[115V/220V AC Chamber Heater for Klipper](https://www.printables.com/model/1211645-how-to-add-115v220v-ac-chamber-heater-to-creality)** by Carmelo Padula
+   — Provides the **control system design**: Klipper integration via secondary MCU (BTT SKR Pico),
+   NTC temperature sensing, KSD9700 thermal cutoff, fuse protection, PID regulation, and
+   OrcaSlicer configuration. Designed for AC heaters (115V/220V) with SSR switching.
+
+**Key differences in our 24V adaptation:**
+
+| Aspect | NexGen3D Project | AC Klipper Project | This 24V Project |
+|--------|-----------------|-------------------|-----------------|
+| Heater | 24V PTC 200W | 115V/220V AC (Qibi Plus) | 24V PTC 200W (from NexGen3D) |
+| Switching | None (always on) | 40A SSR (AC) | MOSFET modules (DC) |
+| Control MCU | None | BTT SKR Pico (RP2040) | Raspberry Pi Pico 2 (RP2350) |
+| Fan interlock | Wired in parallel | 24V relay | Klipper `heater_fan` (software) |
+| Safety cutoff | Not included | KSD9700 75°C | KSD9700 **120°C** (see [rationale](#thermal-cutoff-ksd9700-120c)) |
+| Mains voltage | No | Yes (inside enclosure) | No (24V DC only) |
+| Klipper integration | No | Yes (PID, macros) | Yes (PID, macros, OrcaSlicer) |
 
 ---
 
 ## Bill of Materials
 
 | # | Component | Specification | Qty | Notes |
-|---|-----------|---------------|-----|-------|
-| 1 | NexGen3D Chamber Heater | 24V PTC 200W + 24V 7530 blower fan | 1 | Modify to separate fan/PTC wiring |
+|---|---|---|---|---|
+| 1 | NexGen3D Chamber Heater | 24V PTC 200W + 24V 7530 blower fan | 1 | [Printables](https://www.printables.com/model/863675-nexgen3d-chamber-heater) |
 | 2 | Raspberry Pi Pico 2 | RP2350 | 1 | Secondary Klipper MCU |
-| 3 | MOSFET module | JZ-MOS / AOD4184A, 36V/15A, 3.3V logic | 2 | One for heater, one for fan |
-| 4 | Power supply | 24V, 250W minimum | 1 | Dedicated for heater only |
-| 5 | NTC thermistor | 100K, Generic 3950 | 1-3 | Chamber temperature sensing |
-| 6 | Pull-up resistor | 4.7kΩ | 1-3 | One per thermistor |
-| 7 | Thermal cutoff switch | KSD9700 **85°C NC** | 1 | Hardware safety (NOT 75°C!) |
-| 8 | Inline fuse holder + fuse | Glass fuse 5x20mm, **15A** | 1 | 200W/24V = 8.3A + inrush margin |
-| 9 | Wire | 1.5 mm², silicone insulated | ~2m | Heat resistant |
-| 10 | Thermal shield mat | Self-adhesive, aluminum + fiber | 50x100cm | For enclosure insulation |
-| 11 | Aluminum plate | 3mm, ~150x100mm | 1 | Heater mounting bracket |
+| 3 | MOSFET module (heater) | AOD4184A, 36V/15A/400W, 3.3V logic | 1 | PWM capable, logic-level |
+| 4 | MOSFET module (fan) | AOD4184A, 36V/15A/400W, 3.3V logic | 1 | Same module as above |
+| 5 | Power supply (heater) | 24V, 250W minimum (350W recommended) | 1 | e.g. Meanwell LRS-350-24 |
+| 6 | NTC thermistor | 100K, NTC 3950 | 1 | Chamber temperature sensor |
+| 7 | Pull-up resistor | 4.7kΩ | 1 | Voltage divider for NTC |
+| 8 | Thermal cutoff switch | KSD9700 **120°C NC** (normally closed) | 1 | Hardware safety — see [rationale below](#thermal-cutoff-ksd9700-120c) |
+| 9 | Inline fuse holder + fuse | Glass fuse 5×20mm, 15A | 1 | 200W/24V = 8.3A + inrush margin |
+| 10 | Wire | 1.5 mm² (≥18AWG), silicone/PTFE insulated | ~2m | Heat resistant insulation |
+| 11 | Dupont connectors/pins | For Pico 2 GPIO connections | misc | — |
 
-### Important Notes on Components
+### Component Notes
 
-**KSD9700 — Use 85°C, NOT 75°C!**
-- PTC metal housing reaches 70-90°C during normal operation with fan running
-- 75°C would cause nuisance trips during normal heating
-- 85°C gives margin for normal operation but still triggers on fan failure (PTC goes >150°C)
+**MOSFET module (AOD4184A):**
+- Must be **logic-level** — works with 3.3V signal from Pico 2
+- IRF520 modules will NOT work (require ~10V gate voltage)
+- Search AliExpress for: "MOSFET PWM 36V 400W 15A module" or "D4184 module"
 
-**Fuse — 15A, NOT 10A!**
-- Heater draws 8.3A continuous (200W / 24V)
-- PTC has inrush current spike at cold start (~10-12A)
-- 15A prevents nuisance blowing while still protecting against shorts
+**Fuse sizing:**
+- Heater draws 200W / 24V = 8.3A continuous
+- PTC heater has inrush current spike at cold start (~10–12A)
+- 15A fuse provides margin for inrush without nuisance tripping
 
-**MOSFET Module — Must be Logic-Level!**
-- JZ-MOS / D4184 / AOD4184A work with 3.3V from Pico ✓
-- IRF520 does NOT work — requires 10V gate voltage ✗
+**Wire gauge:**
+- 1.5 mm² rated for ~15–16A, heater draws 8.3A — nearly 2× safety margin
+- Original NexGen3D BOM specifies 18AWG (0.82 mm²), so 1.5 mm² exceeds requirements
+- Use silicone or PTFE insulated wire near the heater element
+
+**Power supply:**
+- Dedicated PSU for heater only — do not share with the printer's own PSU
+- The printer (heated bed + hotend + steppers) already draws ~200–250W
+- Adding a 200W heater with startup spikes would risk voltage drops and board resets
+- **GND of both PSUs must be connected together** (common ground reference for MOSFETs)
 
 ---
 
 ## Hardware Modification: Separate Fan & Heater Wiring
 
-⚠️ **Critical step!** The NexGen3D heater ships with fan and PTC wired in parallel (2 shared wires).
+⚠️ **Critical step.** The NexGen3D heater ships with the fan and PTC heater wired in parallel
+on 2 shared wires. You must separate them into 4 independent wires.
 
-**Why separate them:**
-- Without separation, turning off heater also kills the fan
-- Hot PTC without airflow will warp the ABS housing
-- Klipper's `heater_fan` needs independent fan control for automatic cooldown
+**Why this matters:**
+- Without separation, turning off the heater also kills the fan
+- Hot PTC element without airflow will warp the ABS housing (author's own warning)
+- Klipper's `heater_fan` feature needs independent fan control for automatic cooldown
 
 **How to do it:**
-1. Open the NexGen3D heater housing (remove cover screws)
+1. Open the NexGen3D heater housing (remove the 8× M3 cover screws)
 2. Disconnect the parallel wiring between fan and PTC
 3. Run separate wire pairs:
-   - 2 wires → 24V 7530 blower fan (~3-5W)
+   - 2 wires → 24V 7530 blower fan (~3–5W)
    - 2 wires → 24V PTC heater element (200W)
-4. Install KSD9700 85°C on PTC metal housing (under mounting screw or with thermal paste)
-5. Install fuse inline (can be inside heater housing)
-6. Route all wires out through cable exit
+4. Route all 4 wires out through the cable exit
+5. Reassemble the housing
 
 ---
 
-## Wiring Diagrams
+## Thermal Cutoff: KSD9700 120°C
+
+### Why 120°C instead of 75°C or 85°C
+
+The KSD9700 is a **hardware emergency cutoff**, not a temperature regulator. It should only
+trigger when something goes wrong (e.g. fan failure), never during normal operation.
+
+The original AC project uses KSD9700 75°C because their heater (Qibi Plus) has its own enclosed
+housing and the KSD is mounted **outside** the heater body. In the NexGen3D design, we mount
+the KSD **directly on the aluminum PTC element** for fastest possible response — and this
+changes the temperature requirements significantly.
+
+**Temperature analysis at different mounting points:**
+
+| Location | Normal operation (fan OK) | Fan failure |
+|----------|--------------------------|-------------|
+| Chamber air | 55–60°C | Slowly rises |
+| Heater outlet air | 70–80°C | Drops (no flow) |
+| PTC aluminum body | **70–90°C** | **150°C+** (rapid) |
+
+With KSD mounted directly on the PTC metal body:
+- **75°C** — will false-trigger during normal operation at higher chamber temps → cycling on/off
+- **85°C** — still risks false triggers when targeting 60°C chamber
+- **95–110°C** — workable but narrow margins
+- **120°C** — **optimal**: well above normal operation (70–90°C), but responds instantly to
+  fan failure (PTC reaches 150°C+ within seconds). 140°C would be too close to PTC max.
+
+### Mounting Position
+
+The KSD9700 120°C NC is mounted **under one of the M3 screws that secure the PTC element
+to the ABS housing**. This provides:
+- Direct metal-to-metal thermal contact with the PTC body
+- Mechanical attachment without additional adhesive
+- Fastest possible response to PTC overheating
+
+**Mounting steps:**
+1. Remove one of the 4× M3 screws holding the PTC to the housing
+2. Place the KSD9700 metal tab under the screw head
+3. Tighten the screw — ensures firm thermal contact
+4. Optionally add a thin thermal pad between KSD and PTC for consistent contact
+
+> **Note:** A thin layer of thermal paste between the KSD body and the PTC surface
+> further improves thermal coupling and response time.
+
+### Wiring
+
+The KSD is wired **in series** with the PTC heater power line:
+
+```
++24V → FUSE → MOSFET VOUT+ → KSD → PTC (+) → PTC (−) → MOSFET VOUT− → GND
+```
+
+---
+
+## Wiring Diagram
 
 ### System Overview
 
 ```
-╔════════════════════════════════════════════════════════════════════════════╗
-║                                                                            ║
-║   MAINS 230V ──→ [5V PSU] ──→ Raspberry Pi ──USB──→ Pico 2                ║
-║                                                                            ║
-║   MAINS 230V ──→ [24V PSU 250W] ──→ Heater circuit (via MOSFETs)          ║
-║                        │                                                   ║
-║                       GND ─────────────────────────→ Pico 2 GND pin       ║
-║                                                      (one wire!)           ║
-║                                                                            ║
-╚════════════════════════════════════════════════════════════════════════════╝
+╔═══════════════════════════════════════════════════════════════════════╗
+║                                                                       ║
+║   MAINS 230V ──→ [5V PSU] ──→ Raspberry Pi ──USB──→ Pico 2          ║
+║   MAINS 230V ──→ [24V PSU] ──→ Heater circuit (via MOSFETs)         ║
+║                       │                                               ║
+║                      GND ──────────────────→ Pico 2 GND pin          ║
+║                                              (one wire!)              ║
+╚═══════════════════════════════════════════════════════════════════════╝
 ```
 
-### MOSFET Module Pinout (JZ-MOS)
+### Detailed Wiring
 
 ```
-                    ┌─────────────────────────────────┐
-                    │                                 │
-     Screw          │    ┌───┐ ┌───┐                 │
-     Terminals ───→ │    │ Q1│ │ Q2│   JZ-MOS       │
-                    │    └───┘ └───┘                 │
-                    │                                 │
-                    │   VIN-  VIN+  VOUT- VOUT+      │
-                    │    ●     ●     ●     ●         │
-                    └────┼─────┼─────┼─────┼─────────┘
-                         │     │     │     │
-                         │     │     │     └── To load (+)
-                         │     │     └──────── To load (-)  
-                         │     └────────────── From PSU (+24V)
-                         └──────────────────── From PSU (GND)
-                    
-                    
-     Signal         ┌─────────────────────────────────┐
-     Pins ────→     │  ○ ○ ○                          │
-                    │ GND    TRIG/PWM                 │
-                    │  │       │                      │
-                    │  │       └── Signal from Pico GPIO
-                    │  └────────── Ground (to Pico GND)
-                    └─────────────────────────────────┘
-```
-
-### Complete Wiring Diagram
-
-```
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃                         24V PSU (250W, dedicated)                         ┃
-┃                        ┌─────────┴─────────┐                              ┃
-┃                       +24V                GND                             ┃
-┃                        │                   │                              ┃
-┗━━━━━━━━━━━━━━━━━━━━━━━━┿━━━━━━━━━━━━━━━━━━━┿━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-                         │                   │
-          ┌──────────────┴──────┐            │
-          │                     │            │
-          ▼                     ▼            │
-   ┌─────────────┐       ┌─────────────┐     │
-   │ MOSFET #1   │       │ MOSFET #2   │     │
-   │ (HEATER)    │       │ (FAN)       │     │
-   │             │       │             │     │
-   │ VIN+  ◄──24V│       │ VIN+  ◄──24V│     │
-   │ VIN-  ◄─────────────│ VIN-  ◄─────┼─────┤
-   │             │       │             │     │
-   │ VOUT+ ──────────┐   │ VOUT+ ─────────┐  │
-   │ VOUT- ──────────┼─┐ │ VOUT- ─────────┼──┤
-   │             │   │ │ │             │  │  │
-   │ TRIG ◄──GP15│   │ │ │ TRIG ◄──GP14│  │  │
-   │ GND  ◄──────────┼─┼─│ GND  ◄──────┼──┼──┤
-   └─────────────┘   │ │ └─────────────┘  │  │
-                     │ │                  │  │
-                     │ │                  │  │
-   ══════════════════╪═╪══════════════════╪══╪═══  Cable to heater housing
-                     │ │                  │  │
-   ┌─────────────────┼─┼──────────────────┼──┼───────────────────────────┐
-   │  HEATER HOUSING │ │                  │  │                           │
-   │                 │ │                  │  │                           │
-   │                 │ │      ┌───────────┘  │                           │
-   │                 │ │      │              │                           │
-   │                 │ │   FAN (+)       FAN (-)                         │
-   │                 │ │      │              │                           │
-   │                 │ │      ▼              ▼                           │
-   │                 │ │   ┌─────────────────────┐                       │
-   │                 │ │   │    7530 BLOWER     │                       │
-   │                 │ │   │       FAN          │                       │
-   │                 │ │   └─────────────────────┘                       │
-   │                 │ │                                                 │
-   │                 │ │                                                 │
-   │                 ▼ ▼                                                 │
-   │   ┌──────┐   ┌─────────┐   ┌───────────────────┐                   │
-   │   │ FUSE │──►│ KSD9700 │──►│    PTC HEATER     │                   │
-   │   │ 15A  │   │  85°C   │   │      200W         │                   │
-   │   └──────┘   │   NC    │   └───────────────────┘                   │
-   │              └─────────┘            │                               │
-   │                  ▲                  │                               │
-   │                  │                  ▼                               │
-   │            Mounted on          Back to MOSFET #1                    │
-   │            PTC metal           VOUT- (via cable)                    │
-   │                                                                     │
-   └─────────────────────────────────────────────────────────────────────┘
-
-
-   ┌─────────────────────────────────────────────────────────────────────┐
-   │                      RASPBERRY PI PICO 2                            │
-   │                                                                     │
-   │    USB ◄────────────────────────────────────► Raspberry Pi          │
-   │                                                (power + data)       │
-   │                                                                     │
-   │    GP15 ─────────────────────────────────────► MOSFET #1 TRIG      │
-   │    GP14 ─────────────────────────────────────► MOSFET #2 TRIG      │
-   │    GND  ─────────────────────────────────────► MOSFETs GND         │
-   │                                                + 24V PSU GND        │
-   │                                                                     │
-   │    3.3V ────┬────────────────────────────────► NTC pull-up         │
-   │             │                                                       │
-   │    GP26 ◄───┴─── [4.7kΩ] ───┬─── [NTC 100K] ──► GND               │
-   │         (ADC0)              │                                       │
-   │                        Voltage                                      │
-   │                        divider                                      │
-   │                        junction                                     │
-   └─────────────────────────────────────────────────────────────────────┘
-```
-
-### Heater Circuit Flow (Current Path)
-
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                                                                          │
-│   +24V ──► FUSE 15A ──► KSD9700 NC ──► PTC (+) ──► PTC (-) ──┐          │
-│                                                               │          │
-│                         ┌─────────────────────────────────────┘          │
-│                         │                                                │
-│                         ▼                                                │
-│                    MOSFET VOUT+                                          │
-│                         │                                                │
-│                    ┌────┴────┐                                           │
-│                    │ MOSFET  │◄──── TRIG (GPIO15 from Pico)             │
-│                    │ D4184   │                                           │
-│                    └────┬────┘                                           │
-│                         │                                                │
-│                    MOSFET VOUT-                                          │
-│                         │                                                │
-│                         ▼                                                │
-│                        GND ◄─────────────────────────────────── 24V PSU │
-│                                                                          │
-└──────────────────────────────────────────────────────────────────────────┘
-
-When TRIG = HIGH (3.3V from Pico):  MOSFET conducts → Current flows → PTC heats
-When TRIG = LOW  (0V from Pico):    MOSFET blocks   → No current   → PTC off
-```
-
-### NTC Thermistor Voltage Divider
-
-```
-        3.3V (from Pico)
+                        24V PSU (dedicated, 250W+)
+                       ┌────────┴────────┐
+                      +24V              GND ─────────────────┐
+                       │                 │                    │
+           ┌───────────┤                 │                    │
+           │           │                 │                    │
+       [FUSE 15A]      │                 │                    │
+           │           │                 │                    │
+           │           │                 │                    │
+           │           │                 │                    │
+         VIN+        VIN+               │                    │
+     ┌─────────┐  ┌─────────┐           │                    │
+     │ MOSFET  │  │ MOSFET  │           │                    │
+     │   M1    │  │   M2    │           │                    │
+     │(heater) │  │ (fan)   │           │                    │
+     └─────────┘  └─────────┘           │                    │
+      SIG  GND     SIG  GND            │                    │
+       │    │       │    │              │                    │
+       │    └───────┘    └──────────────┘                    │
+       │    │       │                                         │
+      GP15 GND    GP14                                       │
+       └────┴───────┘                                         │
+            │                                                 │
+        [PICO 2]                                             │
+            │                                                 │
+           GND ──────────────────────────────────────────────┘
+          GP26 ─── ← ── [4.7kΩ] ── ← ── 3.3V
            │
-           │
-        ┌──┴──┐
-        │     │
-        │4.7kΩ│  Fixed resistor
-        │     │
-        └──┬──┘
-           │
-           ├─────────────────► GP26 (ADC0) — to Pico
-           │
-        ┌──┴──┐
-        │     │
-        │ NTC │  100K @ 25°C, Beta 3950
-        │100K │  (resistance drops as temp rises)
-        │     │
-        └──┬──┘
-           │
-           │
-          GND
+          NTC (in chamber, NOT on heater)
 
 
-Voltage at GP26 = 3.3V × ( NTC / (4.7kΩ + NTC) )
-
-At 25°C:  NTC = 100kΩ  →  V = 3.3 × (100/104.7) = 3.15V
-At 50°C:  NTC = ~33kΩ  →  V = 3.3 × (33/37.7)   = 2.89V  
-At 80°C:  NTC = ~12kΩ  →  V = 3.3 × (12/16.7)   = 2.37V
+                     MOSFET M1 VOUT               MOSFET M2 VOUT
+                    ┌────┴────┐                   ┌────┴────┐
+                  VOUT+     VOUT-               VOUT+     VOUT-
+                    │         │                    │         │
+                 [KSD9700]    │                  FAN +     FAN -
+                  120°C NC    │                    │         │
+                    │         │                 [7530 FAN]   │
+                  PTC +     PTC -                  │         │
+                    │         │                    └────┬────┘
+                 [PTC 200W]   │                         │
+                    │         │                        GND
+                    └────┬────┘
+                         │
+                        GND
 ```
 
-### Multiple Thermistors (Optional)
+### Power Flow Summary
 
 ```
-        3.3V (from Pico)
-           │
-     ┌─────┼─────┬─────────────┐
-     │     │     │             │
-  ┌──┴──┐ ┌┴──┐ ┌┴──┐          │
-  │4.7kΩ│ │4.7│ │4.7│          │
-  └──┬──┘ └─┬─┘ └─┬─┘          │
-     │      │     │            │
-     ├──►GP26     ├──►GP27     ├──►GP28
-     │      │     │            │
-  ┌──┴──┐ ┌─┴─┐ ┌─┴─┐          │
-  │NTC 1│ │NTC│ │NTC│          │
-  │     │ │ 2 │ │ 3 │          │
-  └──┬──┘ └─┬─┘ └─┬─┘          │
-     │      │     │            │
-     └──────┴─────┴────────────┴──► GND
-
-NTC 1 (GP26): Used by heater_generic for PID control
-NTC 2 (GP27): Chamber ambient temperature
-NTC 3 (GP28): Top of chamber (optional)
++24V → FUSE (at PSU) → MOSFET M1 (VIN+→VOUT+) → KSD (on heater) → PTC → MOSFET M1 (VOUT-) → GND
+       ↑                                          ↑                                    ↑
+       short circuit                               overheat                             Klipper
+       protection                                  protection                           control
 ```
+
+### GPIO Pin Assignments
+
+| Pico 2 Pin | Function | Connected To |
+|------------|----------|-------------|
+| GP15 | Heater PWM | MOSFET M1 SIG |
+| GP14 | Fan control | MOSFET M2 SIG |
+| GP26 (ADC0) | Temperature | NTC voltage divider |
+| GND | Common ground | MOSFET GND + 24V PSU GND |
+| 3V3(OUT) | Pullup reference | 4.7kΩ resistor → GP26 |
+
+> **Critical:** Connect 24V PSU GND to Pico 2 GND. Without common ground reference,
+> MOSFET gate signals won't work reliably. This is the only electrical connection
+> between the 24V circuit and the Pico 2 (which is powered via USB from the Pi).
 
 ---
 
-## KSD9700 Mounting
+## Flashing Klipper on Raspberry Pi Pico 2 (RP2350)
 
-Mount the thermal cutoff switch **directly on the PTC metal housing**:
-
-```
-   ┌─────────────────────────────────────────┐
-   │           PTC HEATER ELEMENT            │
-   │  ┌───────────────────────────────────┐  │
-   │  │                                   │  │
-   │  │   ████████████████████████████   │  │
-   │  │   █  Aluminum PTC housing    █   │  │
-   │  │   █                          █   │  │
-   │  │   █    ┌─────────┐           █   │  │
-   │  │   █    │ KSD9700 │◄── Mounted under existing   
-   │  │   █    │  85°C   │    M3 screw, or with       
-   │  │   █    └─────────┘    thermal paste + tape    
-   │  │   █                          █   │  │
-   │  │   ████████████████████████████   │  │
-   │  │                                   │  │
-   │  └───────────────────────────────────┘  │
-   │                  24V                     │
-   └─────────────────────────────────────────┘
-
-KSD9700 in series with PTC power line:
-- Normal operation (PTC at 70-90°C): Contact CLOSED → heater works
-- Fan failure (PTC rises >85°C):     Contact OPENS  → heater stops
-- After cooling (<85°C):             Contact CLOSES → auto-reset
-```
-
----
-
-## Firmware: Flashing Klipper on Pico 2
+The Pico 2 uses the **RP2350** chip, which requires different `menuconfig` settings than the
+original RP2040-based Pico.
 
 ### Build Firmware
-
-On the Klipper host (Raspberry Pi):
 
 ```bash
 cd ~/klipper
 make menuconfig
 ```
 
-Configuration:
+**Select these settings:**
+
 ```
-Micro-controller Architecture: Raspberry Pi RP2040
-Communication interface: USB
+[*] Enable extra low-level configuration options
+    Micro-controller Architecture: Raspberry Pi RP2040/RP235x
+    Processor model: rp2350
+    Bootloader offset: No bootloader
+    Communication Interface: USBSERIAL
 ```
 
-> Note: Select RP2040 even for Pico 2 — it works in compatibility mode.
+> **Important:** Select `rp2350` as the processor model, NOT `rp2040`.
+> The Pico 2 defaults to RP2350 ARM mode which Klipper supports.
+
+Build the firmware:
 
 ```bash
 make clean
-make
+make -j4
 ```
 
-### Flash to Pico 2
+This generates `~/klipper/out/klipper.uf2`.
 
-1. Hold **BOOTSEL** button on Pico 2
-2. Connect USB cable to Raspberry Pi
-3. Release BOOTSEL — Pico appears as USB mass storage
-4. Copy firmware:
-   ```bash
-   sudo mount /dev/sda1 /mnt
-   sudo cp out/klipper.uf2 /mnt/
-   sudo umount /mnt
-   ```
-5. Pico reboots automatically
+### Flash the Pico 2
 
-### Identify Serial Port
+1. **Disconnect** the Pico 2 from the Raspberry Pi USB
+2. **Hold the BOOTSEL button** on the Pico 2
+3. **While holding BOOTSEL**, connect the Pico 2 via USB to the Raspberry Pi
+4. **Release BOOTSEL** — the Pico 2 appears as a USB mass storage device
+
+```bash
+# Mount and copy firmware
+sudo mount /dev/sda1 /mnt
+sudo cp ~/klipper/out/klipper.uf2 /mnt
+sudo umount /mnt
+```
+
+The Pico 2 will automatically reboot with Klipper firmware.
+
+### Subsequent Flashes (over USB, no BOOTSEL needed)
+
+Once Klipper is running on the Pico 2, you can flash updates without pressing BOOTSEL:
+
+```bash
+sudo service klipper stop
+make flash FLASH_DEVICE=/dev/serial/by-id/usb-Klipper_rp2350_XXXXXXXXXX-if00
+sudo service klipper start
+```
+
+### Verify Connection
 
 ```bash
 ls /dev/serial/by-id/
 ```
 
-Expected output:
+You should see something like:
 ```
-usb-Klipper_rp2350_XXXXXXXXXXXX-if00
+usb-Klipper_rp2350_XXXXXXXXXX-if00
 ```
+
+> **RP2350-E9 Errata Note:** The RP2350 has a known hardware errata (E9). For basic
+> GPIO/ADC usage as in this project, it does not cause issues. The errata primarily
+> affects certain memory access patterns. Klipper handles this correctly.
 
 ---
 
 ## Klipper Configuration
 
-Add to `printer.cfg`:
+Add the following sections to your `printer.cfg`:
+
+### Secondary MCU
 
 ```ini
-# ==============================================================
-# CHAMBER HEATER — Pico 2 as secondary MCU
-# ==============================================================
+[mcu pico_chamber]
+serial: /dev/serial/by-id/usb-Klipper_rp2350_XXXXXXXXXX-if00
+# Replace XXXXXXXXXX with your actual serial ID
+```
 
-[mcu pico]
-serial: /dev/serial/by-id/usb-Klipper_rp2350_XXXXXXXXXXXX-if00
-# Replace XXXXXXXXXXXX with your actual serial ID
+### Chamber Heater (PID-controlled)
 
-# --------------------------------------------------------------
-# Chamber Heater (PID controlled)
-# --------------------------------------------------------------
+```ini
 [heater_generic chamber_heater]
-heater_pin: pico:gpio15
-sensor_type: Generic 3950
-sensor_pin: pico:gpio26
+heater_pin: pico_chamber:gpio15
+max_power: 1.0
+sensor_type: NTC 100K beta 3950
+sensor_pin: pico_chamber:gpio26
+control: pid
+# PID values will be calibrated — these are starting defaults
+pid_Kp: 40.0
+pid_Ki: 0.5
+pid_Kd: 200.0
 min_temp: 0
 max_temp: 80
-control: pid
-# Temporary values — run PID_CALIBRATE after installation:
-pid_Kp: 30
-pid_Ki: 1.0
-pid_Kd: 300
+```
 
-# --------------------------------------------------------------
-# Heater verification (relaxed for slow chamber heating)
-# --------------------------------------------------------------
-[verify_heater chamber_heater]
-max_error: 300
-check_gain_time: 480
-heating_gain: 1
+> **Important:** The `[heater_generic chamber_heater]` section must be in the main
+> `printer.cfg` file (not in an included file), otherwise `SAVE_CONFIG` cannot
+> write the PID calibration results.
 
-# --------------------------------------------------------------
-# Heater Fan (automatic on/off with cooldown)
-# --------------------------------------------------------------
-[heater_fan chamber_heater_fan]
-pin: pico:gpio14
+### Chamber Fan (auto cooldown)
+
+```ini
+[heater_fan chamber_fan]
+pin: pico_chamber:gpio14
 heater: chamber_heater
 heater_temp: 35.0
 fan_speed: 1.0
-
-# --------------------------------------------------------------
-# Additional temperature sensors (optional)
-# --------------------------------------------------------------
-# Uncomment if you have additional thermistors:
-
-#[temperature_sensor chamber_ambient]
-#sensor_type: Generic 3950
-#sensor_pin: pico:gpio27
-#min_temp: -10
-#max_temp: 100
-
-#[temperature_sensor chamber_top]
-#sensor_type: Generic 3950
-#sensor_pin: pico:gpio28
-#min_temp: -10
-#max_temp: 100
 ```
 
-### Configuration Notes
-
-**`[verify_heater chamber_heater]`** — Critical for chamber heaters!
-- Default Klipper settings expect hotend-like heating (fast)
-- Chamber heaters are slow (heating entire air volume)
-- Without these relaxed settings, Klipper will error: "not heating at expected rate"
-
-**`heater: chamber_heater`** — Note: NO prefix!
-- Correct: `heater: chamber_heater`
-- Wrong: `heater: heater_generic chamber_heater`
-
-**Temperature sensor** — No separate sensor needed!
-- `[heater_generic chamber_heater]` automatically shows in Mainsail/Fluidd
-- Only add `[temperature_sensor]` if you have additional thermistors in different locations
+This ensures the fan:
+- Turns ON automatically whenever `chamber_heater` is active
+- Stays ON after heating until the chamber drops below 35°C
+- Protects the PTC element and ABS housing from heat damage
 
 ---
 
-## GCode Macros
+## G-Code Macros
 
-Add to `printer.cfg`:
+### OrcaSlicer-Compatible Macros (M141 / M191)
+
+OrcaSlicer uses **M141** (set chamber temperature) and **M191** (set and wait for chamber
+temperature) to control active chamber heaters. These macros must be defined in Klipper
+for OrcaSlicer integration to work.
 
 ```ini
-# --------------------------------------------------------------
-# Chamber Heater Macros
-# --------------------------------------------------------------
-
-[gcode_macro HEAT_CHAMBER]
-description: Heat chamber to target temperature
+# M141 — Set chamber heater temperature (no wait)
+[gcode_macro M141]
 gcode:
-    {% set TEMP = params.TEMP|default(55)|int %}
-    SET_HEATER_TEMPERATURE HEATER=chamber_heater TARGET={TEMP}
-    M118 Heating chamber to {TEMP}°C...
+    SET_HEATER_TEMPERATURE HEATER=chamber_heater TARGET={params.S|default(0)}
 
+# M191 — Set chamber heater temperature and wait until reached
+[gcode_macro M191]
+gcode:
+    {% set s = params.S|float %}
+    {% if s == 0 %}
+        # Target is 0, turn off heater
+        SET_HEATER_TEMPERATURE HEATER=chamber_heater TARGET=0
+        M117 Chamber heating off
+    {% else %}
+        SET_HEATER_TEMPERATURE HEATER=chamber_heater TARGET={s}
+        # Optionally use heated bed to assist chamber heating:
+        # M140 S100
+        TEMPERATURE_WAIT SENSOR="heater_generic chamber_heater" MINIMUM={s-1} MAXIMUM={s+1}
+        M117 Chamber at {s}C
+    {% endif %}
+```
+
+### Convenience Macros
+
+```ini
+# Heat chamber to target temperature (non-blocking)
+[gcode_macro HEAT_CHAMBER]
+gcode:
+    {% set temp = params.TEMP|default(0)|float %}
+    M141 S{temp}
+
+# Wait for chamber to reach target temperature (blocking)
+[gcode_macro WAIT_FOR_CHAMBER]
+gcode:
+    {% set temp = params.TEMP|default(0)|float %}
+    {% if temp > 0 %}
+        M117 Waiting for chamber {temp}C...
+        TEMPERATURE_WAIT SENSOR="heater_generic chamber_heater" MINIMUM={temp - 2}
+        M117 Chamber ready
+    {% endif %}
+
+# Turn off chamber heater (fan auto-runs until cooldown)
 [gcode_macro COOL_CHAMBER]
-description: Turn off chamber heater (fan cools automatically)
 gcode:
     SET_HEATER_TEMPERATURE HEATER=chamber_heater TARGET=0
-    M118 Chamber heater off. Fan cooling...
-
-[gcode_macro WAIT_FOR_CHAMBER]
-description: Wait until chamber reaches target temperature
-gcode:
-    {% set TEMP = params.TEMP|default(55)|int %}
-    TEMPERATURE_WAIT SENSOR="heater_generic chamber_heater" MINIMUM={TEMP}
-    M118 Chamber reached {TEMP}°C!
+    M117 Chamber cooling...
 ```
 
 ---
 
-## PID Calibration
+## OrcaSlicer Integration
 
-**After installation, calibrate PID for your specific setup:**
+OrcaSlicer has built-in support for active chamber heaters via the **M141/M191** commands.
 
-```gcode
-PID_CALIBRATE HEATER=chamber_heater TARGET=50
-```
+### Enable Chamber Temperature Control
 
-Wait for completion (several minutes), then save:
+1. **Printer Settings → Basic Information → Accessory:**
+   - Enable **"Support control chamber temperature"** checkbox
 
-```gcode
-SAVE_CONFIG
-```
+2. **Material Settings → Filament Tab → Temperature:**
+   - Set **"Chamber temperature"** for each filament profile (e.g. 55°C for ABS)
+   - Enable **"Activate temperature control"** checkbox
 
-Klipper writes calibrated `pid_Kp`, `pid_Ki`, `pid_Kd` values automatically.
+### How It Works
 
-> **Important:** `[heater_generic chamber_heater]` must be in main `printer.cfg`
-> (not in an included file), otherwise `SAVE_CONFIG` cannot write PID results.
+When both settings are enabled, OrcaSlicer automatically inserts:
+- **`M191 S{chamber_temperature}`** at the **beginning** of G-code (before Machine Start G-code)
+  — this heats the chamber and waits until the target is reached
+- **`M141 S0`** at the **end** of the print — this turns off the chamber heater
 
----
+### G-Code Variables Available in Machine G-Code
 
-## Slicer Integration (OrcaSlicer)
-
-### Machine Start G-code
-
-Add before your START_PRINT macro:
+If you prefer to handle chamber heating in your START_PRINT macro instead of relying on
+the automatic M191 insertion, you can use these variables:
 
 ```gcode
-; Chamber heating
-HEAT_CHAMBER TEMP={chamber_temperature}
-WAIT_FOR_CHAMBER TEMP={chamber_temperature}
+; Temperature of the first filament
+M191 S{chamber_temperature[0]}
+
+; Highest chamber temperature across all filaments (multi-material)
+M191 S{overall_chamber_temperature}
 ```
 
-### Machine End G-code
+### Example Machine Start G-Code (optional, if not using automatic insertion)
 
-Add after your END_PRINT macro:
+```gcode
+; If using manual chamber control in START_PRINT:
+HEAT_CHAMBER TEMP={chamber_temperature[0]}
+WAIT_FOR_CHAMBER TEMP={chamber_temperature[0]}
+```
+
+### Example Machine End G-Code
 
 ```gcode
 COOL_CHAMBER
@@ -518,138 +475,120 @@ COOL_CHAMBER
 ### Recommended Chamber Temperatures
 
 | Filament | Chamber Temp | Notes |
-|----------|--------------|-------|
-| PLA | 0 (off) | Does not need chamber heat |
+|---|---|---|
+| PLA | 0 (off) | Does not need/want chamber heat |
 | PETG | 0 (off) | Does not need chamber heat |
-| ABS | 55-60°C | Eliminates warping |
-| ASA | 55-60°C | Similar to ABS |
-| Nylon | 60-70°C | Higher temps for best results |
-| PC | 65-75°C | Near max safe limit |
+| ABS | 55–60°C | Eliminates warping, improves layer adhesion |
+| ASA | 55–60°C | Similar to ABS |
+| Nylon (PA) | 60–70°C | Higher temps for best results |
+| PC | 65–75°C | Near max safe limit for printer components |
+
+> ⚠️ Keep chamber temperature **below the filament's glass transition temperature**
+> to prevent deformation. For most applications, 50–60°C is effective.
+> Do not exceed 75–80°C — high temperatures can damage belts, bearings, and wiring.
+
+---
+
+## PID Calibration
+
+After installation, calibrate PID for your specific enclosure:
+
+```gcode
+PID_CALIBRATE HEATER=chamber_heater TARGET=55
+```
+
+Wait for completion (several minutes), then save:
+
+```gcode
+SAVE_CONFIG
+```
+
+Klipper will automatically write the calibrated `pid_Kp`, `pid_Ki`, `pid_Kd` values.
 
 ---
 
 ## Safety Layers
 
+The system has 5 independent safety layers:
+
 | Layer | Type | Component | Function |
-|-------|------|-----------|----------|
-| 1 | Software | Klipper PID | Regulates temperature to target |
-| 2 | Software | Klipper `max_temp: 80` | Emergency shutdown if >80°C |
-| 3 | Hardware | **KSD9700 85°C NC** | Physically disconnects power |
-| 4 | Hardware | **Fuse 15A** | Protects against short circuit |
-| 5 | Software | `heater_fan` | Auto fan + cooldown |
+|---|---|---|---|
+| 1 | Software | Klipper PID control | Regulates temperature to target |
+| 2 | Software | Klipper `max_temp: 80` | Emergency shutdown if sensor reads >80°C |
+| 3 | Hardware | KSD9700 **120°C NC** | Physically disconnects heater power on PTC overheat |
+| 4 | Hardware | 15A fuse | Protects against short circuit |
+| 5 | Software | `heater_fan` | Fan always runs when heater is active + auto cooldown |
 
----
+### Why 120°C KSD is Safe Despite Higher Threshold
 
-## Tips & Tricks
+The Klipper `max_temp: 80` (Layer 2) monitors the **chamber air temperature** via the NTC
+sensor. If the chamber reaches 80°C, Klipper shuts everything down — this is the primary
+software safety.
 
-### Enclosure Insulation
+The KSD9700 120°C (Layer 3) monitors the **PTC metal body temperature**. During normal
+operation with the fan running, PTC body stays at 70–90°C. The 120°C threshold only triggers
+if the fan fails and the PTC body starts climbing toward its 150–200°C operating limit.
+This means the KSD acts as a **last-resort hardware failsafe for fan failure**, independent
+of all software.
 
-Line the inside of your enclosure panels with **self-adhesive thermal shield mat**
-(aluminum + fiber, rated for high temperatures). A 50x100cm sheet covers back and
-side panels. Benefits:
-- Reflects radiant heat back into chamber
-- Reduces heat loss
-- Speeds up heating
-- Lowers power consumption
+### Comparison with AC Project
 
-### Back Panel Material
-
-If your back panel is foam PVC (Forex/Palight), **replace it** — foam PVC deforms at ~60°C.
-
-Good alternatives:
-- **HDF / hardboard** — dense, rigid, handles 60-70°C well
-- **Plywood 3-4mm** — similar properties
-
-Line the inside with thermal mat regardless of material.
-
-### Heater Mounting
-
-- Cut an opening in back panel
-- Mount **3mm aluminum plate (~150x100mm)** as heater bracket
-- Screw NexGen3D bracket to aluminum plate
-- Aluminum handles any temperature, provides rigid fireproof mount
-
-### Heater Placement
-
-- **Mount at TOP of back panel** — hot air rises naturally
-- **Aim outlet forward/downward** — toward print zone
-- **Do NOT mount at bottom** — wastes energy heating under the bed
-
-### NTC Sensor Placement
-
-- Mount thermistor on **opposite side** of chamber from heater
-- This measures actual chamber temp, not hot air from heater outlet
-- Avoid placing near heated bed or enclosure openings (drafts)
-
-### 3D Printed Cases
-
-Recommended enclosures for your components:
-
-| Component | Model | Link |
-|-----------|-------|------|
-| Pico 2 | Raspberry Pi Pico Case (for Klipper) | [Printables #226610](https://www.printables.com/model/226610-raspberry-pi-pico-case) |
-| MOSFET | Holder for XY-MOS D4184 | [Printables #355368](https://www.printables.com/model/355368-holder-for-xy-mos-d4184-power-mosfet-breakout-modu) |
-
-Print 2× MOSFET holders (one for heater, one for fan).
+| AC Project Component | This 24V Project | Why |
+|---|---|---|
+| 40A SSR | MOSFET module (AOD4184A) | DC switching, simpler |
+| 24V relay (fan interlock) | Klipper `heater_fan` | Software control with auto cooldown |
+| KSD9700 75°C NC | KSD9700 **120°C NC** | Mounted on PTC body, not outside housing |
+| NTC 100K 3950 | NTC 100K 3950 | Same — temperature sensing |
+| AC fuse (4A @ 115V) | DC fuse (15A @ 24V) | Same power, lower voltage = higher current |
+| BTT SKR Pico (RP2040) | Raspberry Pi Pico 2 (RP2350) | Full Klipper MCU |
+| 115V/220V heater | 24V PTC heater | No mains voltage in enclosure |
 
 ---
 
 ## Installation Checklist
 
 ### Preparation
-- [ ] Open NexGen3D heater, separate fan/PTC into 4 independent wires
-- [ ] Mount KSD9700 **85°C NC** on PTC metal housing
-- [ ] Install fuse 15A inline (can be inside heater housing)
-- [ ] Mount NTC thermistor in center of chamber (away from heater)
+- [ ] Open NexGen3D heater and separate fan/PTC wiring into 4 independent wires
+- [ ] Use 1.5 mm² silicone/PTFE wire for all power connections
+- [ ] Mount KSD9700 120°C NC thermal cutoff under M3 screw on PTC aluminum body
+- [ ] Mount NTC 100K thermistor in the center of the printer enclosure (not on heater)
 
 ### Electrical Assembly
-- [ ] Connect MOSFET #1 (heater): VIN+ ← 24V, VIN- ← GND, VOUT+/VOUT- → to heater cable
-- [ ] Connect MOSFET #2 (fan): VIN+ ← 24V, VIN- ← GND, VOUT+/VOUT- → to fan cable
-- [ ] Connect MOSFET #1 TRIG → Pico GP15
-- [ ] Connect MOSFET #2 TRIG → Pico GP14
-- [ ] Connect MOSFETs GND → Pico GND
-- [ ] Connect 24V PSU GND → Pico GND (critical!)
+- [ ] Wire heater line: +24V → fuse 15A → MOSFET M1 (VIN+→VOUT+) → KSD9700 → PTC (+) → PTC (−) → MOSFET M1 (VOUT−) → GND
+- [ ] Wire fan line: +24V → MOSFET M2 (VIN+→VOUT+) → fan (+) → fan (−) → MOSFET M2 (VOUT−) → GND
+- [ ] Connect MOSFET M1 SIG → Pico GP15, VCC → 3.3V, GND → GND
+- [ ] Connect MOSFET M2 SIG → Pico GP14, VCC → 3.3V, GND → GND
 - [ ] Wire NTC voltage divider: 3.3V → 4.7kΩ → GP26 → NTC → GND
+- [ ] Connect 24V PSU GND to Pico 2 GND pin (critical — common ground reference)
 - [ ] Connect Pico 2 to Raspberry Pi via USB
 
 ### Software Setup
-- [ ] Flash Klipper firmware on Pico 2
+- [ ] Flash Klipper firmware on Pico 2 (`make menuconfig` → RP2350, USBSERIAL)
 - [ ] Identify serial port: `ls /dev/serial/by-id/`
-- [ ] Add configuration to `printer.cfg`
-- [ ] `FIRMWARE_RESTART`
+- [ ] Add all configuration sections to `printer.cfg`
+- [ ] Define M141 and M191 macros for OrcaSlicer compatibility
+- [ ] Enable "Support control chamber temperature" in OrcaSlicer printer settings
+- [ ] Set chamber temperatures in OrcaSlicer filament profiles
+- [ ] Restart Klipper: `FIRMWARE_RESTART`
 
 ### Testing & Calibration
-- [ ] Verify temperature reading shows ambient temp
-- [ ] Test: `SET_HEATER_TEMPERATURE HEATER=chamber_heater TARGET=40`
-- [ ] Verify fan turns on automatically
-- [ ] Run: `PID_CALIBRATE HEATER=chamber_heater TARGET=50`
-- [ ] Save: `SAVE_CONFIG`
-- [ ] Test cooldown: set target to 0, verify fan stays on until chamber <35°C
-
----
-
-## Troubleshooting
-
-### "Unknown pin chip name 'pico_chamber'"
-Your MCU has a different name. Check your `[mcu]` section — use that name in pin references.
-Example: if `[mcu pico]` then use `pico:gpio15` not `pico_chamber:gpio15`
-
-### "pin gpioXX used multiple times"
-You're referencing the same pin in multiple sections. The heater's sensor is automatically
-available — don't create a separate `[temperature_sensor]` with the same pin.
-
-### "Heater not heating at expected rate"
-Add `[verify_heater chamber_heater]` section with relaxed timing. Chamber heaters are slow.
-
-### "Option 'heater' must be specified" / wrong heater reference
-Use `heater: chamber_heater` (without `heater_generic` prefix).
+- [ ] Verify Pico 2 MCU connection: check Klipper logs for `pico_chamber` MCU
+- [ ] Verify temperature reading: should show ambient temp (~20–25°C)
+- [ ] Test fan: `SET_HEATER_TEMPERATURE HEATER=chamber_heater TARGET=40`
+- [ ] Verify fan turns on automatically when heater starts
+- [ ] Run PID calibration: `PID_CALIBRATE HEATER=chamber_heater TARGET=55`
+- [ ] Save results: `SAVE_CONFIG`
+- [ ] Verify cooldown: set target to 0, confirm fan stays on until chamber <35°C
 
 ---
 
 ## References
 
-- NexGen3D Chamber Heater: https://www.printables.com/model/863675-nexgen3d-chamber-heater
-- AC Chamber Heater Guide (inspiration): https://www.printables.com/model/1211645-how-to-add-115v220v-ac-chamber-heater-to-creality
-- Klipper heater_generic: https://www.klipper3d.org/Config_Reference.html#heater_generic
-- Klipper heater_fan: https://www.klipper3d.org/Config_Reference.html#heater_fan
-- Klipper verify_heater: https://www.klipper3d.org/Config_Reference.html#verify_heater
+- NexGen3D Chamber Heater (physical assembly): https://www.printables.com/model/863675-nexgen3d-chamber-heater
+- AC Chamber Heater for Klipper (control system inspiration): https://www.printables.com/model/1211645-how-to-add-115v220v-ac-chamber-heater-to-creality
+- OrcaSlicer Chamber Temperature Wiki: https://github.com/OrcaSlicer/OrcaSlicer/wiki/Chamber-temperature
+- OrcaSlicer Material Temperatures Wiki: https://github.com/OrcaSlicer/OrcaSlicer/wiki/material_temperatures
+- Klipper heater_generic docs: https://www.klipper3d.org/Config_Reference.html#heater_generic
+- Klipper heater_fan docs: https://www.klipper3d.org/Config_Reference.html#heater_fan
+- Klipper secondary MCU: https://www.klipper3d.org/RPi_microcontroller.html
+- Klipper RP2350 support: https://klipper.discourse.group/t/support-for-rp2350-micro-controllers/19656
