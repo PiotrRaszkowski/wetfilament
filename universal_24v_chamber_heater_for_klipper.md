@@ -16,7 +16,7 @@ This design is a **hybrid of two Printables projects**, adapted for safe 24V DC 
 
 2. **[115V/220V AC Chamber Heater for Klipper](https://www.printables.com/model/1211645-how-to-add-115v220v-ac-chamber-heater-to-creality)** by Carmelo Padula
    — Provides the **control system design**: Klipper integration via secondary MCU (BTT SKR Pico),
-   NTC temperature sensing, KSD9700 thermal cutoff, fuse protection, PID regulation, and
+   NTC temperature sensing, KSD9700 thermal cutoff, fuse protection, and
    OrcaSlicer configuration. Designed for AC heaters (115V/220V) with SSR switching.
 
 **Key differences in our 24V adaptation:**
@@ -29,7 +29,8 @@ This design is a **hybrid of two Printables projects**, adapted for safe 24V DC 
 | Fan interlock | Wired in parallel | 24V relay | Klipper `heater_fan` (software) |
 | Safety cutoff | Not included | KSD9700 75°C | KSD9700 **120°C** (see [rationale](#thermal-cutoff-ksd9700-120c)) |
 | Mains voltage | No | Yes (inside enclosure) | No (24V DC only) |
-| Klipper integration | No | Yes (PID, macros) | Yes (PID, macros, OrcaSlicer) |
+| Temperature control | None | PID | **Watermark (bang-bang)** — better for PTC |
+| Klipper integration | No | Yes (PID, macros) | Yes (watermark, M141/M191 macros, OrcaSlicer) |
 
 ---
 
@@ -44,10 +45,11 @@ This design is a **hybrid of two Printables projects**, adapted for safe 24V DC 
 | 5 | Power supply (heater) | 24V, 250W minimum (350W recommended) | 1 | e.g. Meanwell LRS-350-24 |
 | 6 | NTC thermistor | 100K, NTC 3950 | 1 | Chamber temperature sensor |
 | 7 | Pull-up resistor | 4.7kΩ | 1 | Voltage divider for NTC |
-| 8 | Thermal cutoff switch | KSD9700 **120°C NC** (normally closed) | 1 | Hardware safety — see [rationale below](#thermal-cutoff-ksd9700-120c) |
-| 9 | Inline fuse holder + fuse | Glass fuse 5×20mm, 15A | 1 | 200W/24V = 8.3A + inrush margin |
-| 10 | Wire | 1.5 mm² (≥18AWG), silicone/PTFE insulated | ~2m | Heat resistant insulation |
-| 11 | Dupont connectors/pins | For Pico 2 GPIO connections | misc | — |
+| 8 | Ceramic capacitor | **100nF (0.1µF)** | 1 | ADC noise filter — see [Thermistor Noise Filtering](#thermistor-noise-filtering) |
+| 9 | Thermal cutoff switch | KSD9700 **120°C NC** (normally closed) | 1 | Hardware safety — see [rationale](#thermal-cutoff-ksd9700-120c) |
+| 10 | Inline fuse holder + fuse | Glass fuse 5×20mm, 15A | 1 | 200W/24V = 8.3A + inrush margin |
+| 11 | Wire | 1.5 mm² (≥18AWG), silicone/PTFE insulated | ~2m | Heat resistant insulation |
+| 12 | Dupont connectors/pins | For Pico 2 GPIO connections | misc | — |
 
 ### Component Notes
 
@@ -97,7 +99,7 @@ on 2 shared wires. You must separate them into 4 independent wires.
 
 ## Thermal Cutoff: KSD9700 120°C
 
-### Why 120°C instead of 75°C or 85°C
+### Why 120°C Instead of 75°C or 85°C
 
 The KSD9700 is a **hardware emergency cutoff**, not a temperature regulator. It should only
 trigger when something goes wrong (e.g. fan failure), never during normal operation.
@@ -149,6 +151,43 @@ The KSD is wired **in series** with the PTC heater power line:
 
 ---
 
+## Thermistor Noise Filtering
+
+The Pico 2 ADC can produce noisy temperature readings from the NTC thermistor, causing
+the reported chamber temperature to fluctuate by several degrees. This is a known issue
+with RP2350/RP2040 ADCs, especially with long wire runs to the thermistor.
+
+### Hardware Fix (Recommended)
+
+Solder a **100nF (0.1µF) ceramic capacitor** between **GP26 and GND** on the Pico 2,
+as close to the GPIO pin as possible. This forms a low-pass filter with the 4.7kΩ pull-up
+resistor, eliminating high-frequency noise from the ADC input.
+
+```
+3.3V ─── [4.7kΩ] ──┬── GP26 (ADC0)
+                    │
+              [100nF cap]
+                    │
+NTC ────────────────┤
+                    │
+                   GND
+```
+
+### Software Supplement
+
+Klipper offers `smooth_time` parameter to average temperature readings over a time window.
+For a chamber heater (where temperature changes slowly), a longer smoothing window is appropriate:
+
+```ini
+smooth_time: 10
+```
+
+> **Note:** In our testing, `smooth_time` alone was not sufficient to eliminate ADC noise
+> on the Pico 2. The 100nF capacitor is the recommended primary fix. Use `smooth_time`
+> as an additional measure.
+
+---
+
 ## Wiring Diagram
 
 ### System Overview
@@ -193,9 +232,13 @@ The KSD is wired **in series** with the PTC heater power line:
         [PICO 2]                                             │
             │                                                 │
            GND ──────────────────────────────────────────────┘
-          GP26 ─── ← ── [4.7kΩ] ── ← ── 3.3V
-           │
-          NTC (in chamber, NOT on heater)
+          GP26 ─── ← ── [4.7kΩ] ──┬── ← ── 3.3V
+                                   │
+                             [100nF cap]
+                                   │
+                                  GND
+                                   │
+                                  NTC (in chamber, NOT on heater)
 
 
                      MOSFET M1 VOUT               MOSFET M2 VOUT
@@ -227,9 +270,9 @@ The KSD is wired **in series** with the PTC heater power line:
 
 | Pico 2 Pin | Function | Connected To |
 |------------|----------|-------------|
-| GP15 | Heater PWM | MOSFET M1 SIG |
+| GP15 | Heater control | MOSFET M1 SIG |
 | GP14 | Fan control | MOSFET M2 SIG |
-| GP26 (ADC0) | Temperature | NTC voltage divider |
+| GP26 (ADC0) | Temperature | NTC voltage divider (with 100nF cap to GND) |
 | GND | Common ground | MOSFET GND + 24V PSU GND |
 | 3V3(OUT) | Pullup reference | 4.7kΩ resistor → GP26 |
 
@@ -273,7 +316,7 @@ make -j4
 
 This generates `~/klipper/out/klipper.uf2`.
 
-### Flash the Pico 2
+### Flash the Pico 2 (Initial — BOOTSEL Method)
 
 1. **Disconnect** the Pico 2 from the Raspberry Pi USB
 2. **Hold the BOOTSEL button** on the Pico 2
@@ -281,7 +324,6 @@ This generates `~/klipper/out/klipper.uf2`.
 4. **Release BOOTSEL** — the Pico 2 appears as a USB mass storage device
 
 ```bash
-# Mount and copy firmware
 sudo mount /dev/sda1 /mnt
 sudo cp ~/klipper/out/klipper.uf2 /mnt
 sudo umount /mnt
@@ -289,7 +331,7 @@ sudo umount /mnt
 
 The Pico 2 will automatically reboot with Klipper firmware.
 
-### Subsequent Flashes (over USB, no BOOTSEL needed)
+### Subsequent Flashes (Over USB — No BOOTSEL Needed)
 
 Once Klipper is running on the Pico 2, you can flash updates without pressing BOOTSEL:
 
@@ -323,37 +365,63 @@ Add the following sections to your `printer.cfg`:
 ### Secondary MCU
 
 ```ini
-[mcu pico_chamber]
+[mcu pico]
 serial: /dev/serial/by-id/usb-Klipper_rp2350_XXXXXXXXXX-if00
 # Replace XXXXXXXXXX with your actual serial ID
 ```
 
-### Chamber Heater (PID-controlled)
+### Chamber Heater (Watermark / Bang-Bang Control)
 
 ```ini
 [heater_generic chamber_heater]
-heater_pin: pico_chamber:gpio15
-max_power: 1.0
-sensor_type: NTC 100K beta 3950
-sensor_pin: pico_chamber:gpio26
-control: pid
-# PID values will be calibrated — these are starting defaults
-pid_Kp: 40.0
-pid_Ki: 0.5
-pid_Kd: 200.0
+heater_pin: pico:gpio15
+sensor_type: Generic 3950
+sensor_pin: pico:gpio26
+smooth_time: 10
 min_temp: 0
 max_temp: 80
+control: watermark
+max_delta: 2.0
 ```
 
-> **Important:** The `[heater_generic chamber_heater]` section must be in the main
-> `printer.cfg` file (not in an included file), otherwise `SAVE_CONFIG` cannot
-> write the PID calibration results.
+#### Why Watermark Instead of PID
 
-### Chamber Fan (auto cooldown)
+PTC heaters are **self-regulating** — their resistance increases with temperature, naturally
+limiting power output. This makes them fundamentally different from resistive heaters where
+PID control is essential.
+
+In testing, PID control caused issues:
+- **Power oscillation (0%→100%→0%→100%):** The large thermal mass of the chamber and distance
+  between heater and thermistor caused PID overshoot and aggressive corrections
+- **Aggressive `pid_kd` values:** Calibration produced `pid_kd = 3053` (extremely high derivative
+  term), causing rapid power swings on any temperature change
+- **`verify_heater` shutdowns:** Klipper's heater verification expects consistent heating
+  patterns typical of hotends, not the slow response of chamber heating
+
+Watermark (bang-bang with hysteresis) is simpler and more reliable:
+- Heater ON at 100% when temperature drops 2°C below target
+- Heater OFF when target is reached
+- PTC self-regulation prevents overheating regardless
+- No calibration needed
+- No `SAVE_CONFIG` PID values to manage
+
+> **⚠️ SAVE_CONFIG Gotcha:** If you previously ran `PID_CALIBRATE` for the chamber heater,
+> Klipper stored PID values in the `SAVE_CONFIG` section at the bottom of `printer.cfg`.
+> These **override** your `control: watermark` setting above! You must **manually delete**
+> the `[heater_generic chamber_heater]` block from the `SAVE_CONFIG` section:
+> ```
+> #*# [heater_generic chamber_heater]    ← DELETE this line
+> #*# control = pid                      ← DELETE this line
+> #*# pid_kp = 64.526                    ← DELETE this line
+> #*# pid_ki = 0.341                     ← DELETE this line
+> #*# pid_kd = 3053.680                  ← DELETE this line
+> ```
+
+### Chamber Fan (Auto Cooldown)
 
 ```ini
-[heater_fan chamber_fan]
-pin: pico_chamber:gpio14
+[heater_fan chamber_heater_fan]
+pin: pico:gpio14
 heater: chamber_heater
 heater_temp: 35.0
 fan_speed: 1.0
@@ -363,6 +431,27 @@ This ensures the fan:
 - Turns ON automatically whenever `chamber_heater` is active
 - Stays ON after heating until the chamber drops below 35°C
 - Protects the PTC element and ABS housing from heat damage
+
+### Heater Verification (Relaxed for Chamber)
+
+```ini
+[verify_heater chamber_heater]
+max_error: 9999999
+check_gain_time: 9999999
+heating_gain: 0.1
+```
+
+The default `verify_heater` settings are designed for hotends and heated beds that reach
+target temperature quickly. A chamber heater warms a large volume of air slowly — Klipper's
+default verification will trigger a **"Heater not heating at expected rate"** shutdown,
+killing your print mid-job.
+
+These relaxed settings effectively disable the software verification for the chamber heater.
+This is safe because:
+- **Layer 1:** Klipper `max_temp: 80` still triggers emergency shutdown if the sensor reads too high
+- **Layer 2:** KSD9700 120°C physically disconnects heater power on PTC overheat
+- **Layer 3:** PTC element is self-regulating (cannot overheat by design)
+- **Layer 4:** 15A fuse protects against short circuits
 
 ---
 
@@ -390,12 +479,17 @@ gcode:
         M117 Chamber heating off
     {% else %}
         SET_HEATER_TEMPERATURE HEATER=chamber_heater TARGET={s}
-        # Optionally use heated bed to assist chamber heating:
+        # Optionally use heated bed to assist chamber heating (uncomment next line):
         # M140 S100
         TEMPERATURE_WAIT SENSOR="heater_generic chamber_heater" MINIMUM={s-1} MAXIMUM={s+1}
         M117 Chamber at {s}C
     {% endif %}
 ```
+
+> **Heated bed assist:** Uncommenting `M140 S100` in M191 will set the heated bed to 100°C
+> during chamber warm-up, significantly speeding up heat-soaking in small enclosures (e.g.
+> IKEA LACK). After chamber target is reached, OrcaSlicer will set the bed to the filament's
+> configured bed temperature.
 
 ### Convenience Macros
 
@@ -445,6 +539,9 @@ When both settings are enabled, OrcaSlicer automatically inserts:
   — this heats the chamber and waits until the target is reached
 - **`M141 S0`** at the **end** of the print — this turns off the chamber heater
 
+If the machine is equipped with an auxiliary fan, OrcaSlicer will automatically activate
+the fan during the heating period to help circulate air in the chamber.
+
 ### G-Code Variables Available in Machine G-Code
 
 If you prefer to handle chamber heating in your START_PRINT macro instead of relying on
@@ -458,7 +555,7 @@ M191 S{chamber_temperature[0]}
 M191 S{overall_chamber_temperature}
 ```
 
-### Example Machine Start G-Code (optional, if not using automatic insertion)
+### Example Machine Start G-Code (Optional)
 
 ```gcode
 ; If using manual chamber control in START_PRINT:
@@ -489,31 +586,13 @@ COOL_CHAMBER
 
 ---
 
-## PID Calibration
-
-After installation, calibrate PID for your specific enclosure:
-
-```gcode
-PID_CALIBRATE HEATER=chamber_heater TARGET=55
-```
-
-Wait for completion (several minutes), then save:
-
-```gcode
-SAVE_CONFIG
-```
-
-Klipper will automatically write the calibrated `pid_Kp`, `pid_Ki`, `pid_Kd` values.
-
----
-
 ## Safety Layers
 
 The system has 5 independent safety layers:
 
 | Layer | Type | Component | Function |
 |---|---|---|---|
-| 1 | Software | Klipper PID control | Regulates temperature to target |
+| 1 | Software | Klipper watermark control | Regulates temperature to target ±2°C |
 | 2 | Software | Klipper `max_temp: 80` | Emergency shutdown if sensor reads >80°C |
 | 3 | Hardware | KSD9700 **120°C NC** | Physically disconnects heater power on PTC overheat |
 | 4 | Hardware | 15A fuse | Protects against short circuit |
@@ -542,6 +621,54 @@ of all software.
 | AC fuse (4A @ 115V) | DC fuse (15A @ 24V) | Same power, lower voltage = higher current |
 | BTT SKR Pico (RP2040) | Raspberry Pi Pico 2 (RP2350) | Full Klipper MCU |
 | 115V/220V heater | 24V PTC heater | No mains voltage in enclosure |
+| PID control | Watermark (bang-bang) | Better suited for self-regulating PTC |
+
+---
+
+## Troubleshooting
+
+### "Heater not heating at expected rate" Shutdown
+
+**Symptom:** Klipper shuts down mid-print with message:
+```
+Transition to shutdown state: Heater chamber_heater not heating at expected rate
+```
+
+**Cause:** Default `verify_heater` settings expect rapid heating (like a hotend). Chamber
+heating is much slower — a large air volume heated by a 200W element through convection.
+
+**Fix:** Use the relaxed `verify_heater` settings from the configuration section above.
+
+### PID Oscillation (0%→100% Power Cycling)
+
+**Symptom:** In OrcaSlicer or Mainsail, chamber heater power swings between 0% and 100%
+repeatedly, temperature is unstable.
+
+**Cause:** PID control with aggressive derivative term (common after auto-calibration with
+200W PTC in small enclosure). The thermal distance between PTC and chamber thermistor
+creates a feedback delay that PID cannot handle well.
+
+**Fix:** Switch to `control: watermark` as described in the configuration section. Remember
+to delete any PID values from the `SAVE_CONFIG` section at the bottom of `printer.cfg`.
+
+### Noisy Temperature Readings
+
+**Symptom:** Chamber temperature reading fluctuates by 2–5°C randomly.
+
+**Cause:** RP2350 ADC noise, especially with long wires to the NTC thermistor.
+
+**Fix:** Solder 100nF ceramic capacitor between GP26 and GND on the Pico 2. See
+[Thermistor Noise Filtering](#thermistor-noise-filtering) section.
+
+### SAVE_CONFIG Overrides Watermark Setting
+
+**Symptom:** You set `control: watermark` in printer.cfg but Klipper still uses PID.
+
+**Cause:** Previous `PID_CALIBRATE` saved PID values in the `SAVE_CONFIG` section, which
+takes priority over the main config.
+
+**Fix:** Manually edit `printer.cfg` and delete the `[heater_generic chamber_heater]`
+block from the `#*# <--- SAVE_CONFIG --->` section at the bottom of the file.
 
 ---
 
@@ -559,26 +686,28 @@ of all software.
 - [ ] Connect MOSFET M1 SIG → Pico GP15, VCC → 3.3V, GND → GND
 - [ ] Connect MOSFET M2 SIG → Pico GP14, VCC → 3.3V, GND → GND
 - [ ] Wire NTC voltage divider: 3.3V → 4.7kΩ → GP26 → NTC → GND
+- [ ] Solder 100nF ceramic capacitor between GP26 and GND (close to Pico pin)
 - [ ] Connect 24V PSU GND to Pico 2 GND pin (critical — common ground reference)
 - [ ] Connect Pico 2 to Raspberry Pi via USB
 
 ### Software Setup
 - [ ] Flash Klipper firmware on Pico 2 (`make menuconfig` → RP2350, USBSERIAL)
 - [ ] Identify serial port: `ls /dev/serial/by-id/`
-- [ ] Add all configuration sections to `printer.cfg`
+- [ ] Add all configuration sections to `printer.cfg` (heater, fan, verify_heater)
 - [ ] Define M141 and M191 macros for OrcaSlicer compatibility
 - [ ] Enable "Support control chamber temperature" in OrcaSlicer printer settings
-- [ ] Set chamber temperatures in OrcaSlicer filament profiles
+- [ ] Set chamber temperatures in OrcaSlicer filament profiles (+ "Activate temperature control")
+- [ ] Verify no leftover PID values in SAVE_CONFIG section
 - [ ] Restart Klipper: `FIRMWARE_RESTART`
 
-### Testing & Calibration
-- [ ] Verify Pico 2 MCU connection: check Klipper logs for `pico_chamber` MCU
-- [ ] Verify temperature reading: should show ambient temp (~20–25°C)
-- [ ] Test fan: `SET_HEATER_TEMPERATURE HEATER=chamber_heater TARGET=40`
+### Testing
+- [ ] Verify Pico 2 MCU connection: check Klipper logs for `pico` MCU
+- [ ] Verify temperature reading: should show ambient temp (~20–25°C) without noise
+- [ ] Test heater: `SET_HEATER_TEMPERATURE HEATER=chamber_heater TARGET=40`
 - [ ] Verify fan turns on automatically when heater starts
-- [ ] Run PID calibration: `PID_CALIBRATE HEATER=chamber_heater TARGET=55`
-- [ ] Save results: `SAVE_CONFIG`
+- [ ] Verify watermark behavior: heater ON below target−2°C, OFF at target
 - [ ] Verify cooldown: set target to 0, confirm fan stays on until chamber <35°C
+- [ ] Run a test print with OrcaSlicer chamber temperature set (e.g. ABS at 55°C)
 
 ---
 
@@ -590,5 +719,6 @@ of all software.
 - OrcaSlicer Material Temperatures Wiki: https://github.com/OrcaSlicer/OrcaSlicer/wiki/material_temperatures
 - Klipper heater_generic docs: https://www.klipper3d.org/Config_Reference.html#heater_generic
 - Klipper heater_fan docs: https://www.klipper3d.org/Config_Reference.html#heater_fan
+- Klipper verify_heater docs: https://www.klipper3d.org/Config_Reference.html#verify_heater
 - Klipper secondary MCU: https://www.klipper3d.org/RPi_microcontroller.html
 - Klipper RP2350 support: https://klipper.discourse.group/t/support-for-rp2350-micro-controllers/19656
