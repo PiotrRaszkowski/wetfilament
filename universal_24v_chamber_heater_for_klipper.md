@@ -27,7 +27,7 @@ This design is a **hybrid of two Printables projects**, adapted for safe 24V DC 
 | Switching | None (always on) | 40A SSR (AC) | MOSFET modules (DC) |
 | Control MCU | None | BTT SKR Pico (RP2040) | Raspberry Pi Pico 2 (RP2350) |
 | Fan interlock | Wired in parallel | 24V relay | Klipper `heater_fan` (software) |
-| Safety cutoff | Not included | KSD9700 75°C | KSD9700 **120°C** (see [rationale](#thermal-cutoff-ksd9700-120c)) |
+| Safety cutoff | Not included | KSD9700 75°C | KSD9700 **120–140°C** (see [rationale](#thermal-cutoff-ksd9700-120c-or-140c)) |
 | Mains voltage | No | Yes (inside enclosure) | No (24V DC only) |
 | Temperature control | None | PID | **Watermark (bang-bang)** — better for PTC |
 | Klipper integration | No | Yes (PID, macros) | Yes (watermark, M141/M191 macros, OrcaSlicer) |
@@ -46,10 +46,11 @@ This design is a **hybrid of two Printables projects**, adapted for safe 24V DC 
 | 6 | NTC thermistor | 100K, NTC 3950 | 1 | Chamber temperature sensor |
 | 7 | Pull-up resistor | 4.7kΩ | 1 | Voltage divider for NTC |
 | 8 | Ceramic capacitor | **100nF (0.1µF)** | 1 | ADC noise filter — see [Thermistor Noise Filtering](#thermistor-noise-filtering) |
-| 9 | Thermal cutoff switch | KSD9700 **120°C NC** (normally closed) | 1 | Hardware safety — see [rationale](#thermal-cutoff-ksd9700-120c) |
-| 10 | Inline fuse holder + fuse | Glass fuse 5×20mm, 15A | 1 | 200W/24V = 8.3A + inrush margin |
-| 11 | Wire | 1.5 mm² (≥18AWG), silicone/PTFE insulated | ~2m | Heat resistant insulation |
-| 12 | Dupont connectors/pins | For Pico 2 GPIO connections | misc | — |
+| 9 | Thermal cutoff switch | KSD9700 **120°C or 140°C NC** (normally closed) | 1 | Hardware safety — see [rationale](#thermal-cutoff-ksd9700-120c-or-140c) |
+| 10 | Automotive MIDI fuse holder + fuse | Hermetyczna oprawka MIDI 15A + kabel 3mm² | 1 | See [Fuse Placement](#fuse-placement) |
+| 11 | Wire (heater/power) | 1.5 mm² (16AWG), **silicone insulated** | ~2m | See [Wire & Cable Recommendations](#wire--cable-recommendations) |
+| 12 | Wire (fan/signal) | 0.5 mm² (22AWG), silicone insulated | ~1m | For fan leads and low-current connections |
+| 13 | Dupont connectors/pins | For Pico 2 GPIO connections | misc | — |
 
 ### Component Notes
 
@@ -63,10 +64,48 @@ This design is a **hybrid of two Printables projects**, adapted for safe 24V DC 
 - PTC heater has inrush current spike at cold start (~10–12A)
 - 15A fuse provides margin for inrush without nuisance tripping
 
+**Fuse type — use automotive MIDI, NOT glass:**
+- Standard glass fuses in cheap holders have high contact resistance → heat buildup at 8A+
+- Inside the heater housing, ambient heat further derates the fuse, causing false blows
+- **Automotive MIDI fuses** have massive blade contacts with minimal resistance
+- Search Allegro for: "hermetyczna oprawka bezpiecznik MIDI 15A kabel" (~5–9 PLN)
+- Recommended: Amio 02337 or ME Premium ME-006182
+
+**⚠️ Fuse placement — mount OUTSIDE the heater housing:**
+- The NexGen3D housing interior reaches 100–150°C+ during operation
+- Glass fuses will melt from ambient heat alone, not from overcurrent
+- Even MIDI fuses should be mounted externally to prevent thermal derating
+- Mount near the PSU or on the electronics board, at room temperature
+
 **Wire gauge:**
 - 1.5 mm² rated for ~15–16A, heater draws 8.3A — nearly 2× safety margin
 - Original NexGen3D BOM specifies 18AWG (0.82 mm²), so 1.5 mm² exceeds requirements
 - Use silicone or PTFE insulated wire near the heater element
+
+### Wire & Cable Recommendations
+
+Different parts of the system have different temperature and current requirements.
+Choose wire type based on where it will be routed:
+
+| Section | Min. gauge | Recommended insulation | Why |
+|---------|-----------|----------------------|-----|
+| PTC heater leads (inside housing) | 1.5 mm² (16AWG) | **Silicone** or **PTFE** | Housing interior reaches 100–150°C+. PVC melts at ~105°C. |
+| Fan leads (inside housing) | 0.5 mm² (22AWG) | **Silicone** or **PTFE** | Low current (~0.2A) but same high temperature environment |
+| Heater → MOSFET (outside housing) | 1.5 mm² (16AWG) | Silicone preferred, PVC acceptable | Room temperature, high current |
+| Fan → MOSFET (outside housing) | 0.5 mm² (22AWG) | PVC or silicone | Room temperature, low current |
+| NTC thermistor leads | 0.25–0.5 mm² (24–22AWG) | Any (signal wire) | Minimal current, keep short to reduce ADC noise |
+| Pico 2 GPIO signal wires | 0.25 mm² (24AWG) | Any (Dupont/jumper wires OK) | Logic signals only, negligible current |
+| 24V PSU → fuse → MOSFETs | 1.5 mm² (16AWG) | PVC or silicone | Room temperature (electronics outside enclosure) |
+| PSU GND → Pico 2 GND | 0.5 mm² (22AWG) | Any | Reference ground, negligible current |
+
+**Key rules:**
+- **Inside the heater housing or enclosure:** always use silicone or PTFE insulated wire.
+  Standard PVC insulation softens at ~60°C and melts at ~105°C — it will fail in a heated chamber.
+- **Outside the enclosure (electronics area):** PVC is fine for room temperature wiring.
+- **All power connections (heater, fan, PSU):** use crimp terminals or solder + heat shrink.
+  Avoid bare wire twist connections — they corrode and increase resistance over time.
+- **Silicone wire** is widely available on AliExpress — search for "silicone wire 16AWG" or
+  "silicone wire 22AWG". It stays flexible from −60°C to +200°C.
 
 **Power supply:**
 - Dedicated PSU for heater only — do not share with the printer's own PSU
@@ -97,9 +136,9 @@ on 2 shared wires. You must separate them into 4 independent wires.
 
 ---
 
-## Thermal Cutoff: KSD9700 120°C
+## Thermal Cutoff: KSD9700 (120°C or 140°C)
 
-### Why 120°C Instead of 75°C or 85°C
+### Why Not 75°C or 85°C
 
 The KSD9700 is a **hardware emergency cutoff**, not a temperature regulator. It should only
 trigger when something goes wrong (e.g. fan failure), never during normal operation.
@@ -109,36 +148,50 @@ housing and the KSD is mounted **outside** the heater body. In the NexGen3D desi
 the KSD **directly on the aluminum PTC element** for fastest possible response — and this
 changes the temperature requirements significantly.
 
+### PTC Body Temperature — Higher Than Expected
+
+The NexGen3D 24V PTC element has a **consistency temperature of 200±10°C** (per datasheet).
+This means the PTC aluminum body surface runs much hotter than the chamber air temperature.
+The M3 mounting screws conduct heat directly from the PTC body, reaching temperatures well
+above 100°C even during normal operation with the fan running.
+
 **Temperature analysis at different mounting points:**
 
 | Location | Normal operation (fan OK) | Fan failure |
 |----------|--------------------------|-------------|
-| Chamber air | 55–60°C | Slowly rises |
+| Chamber air | 50–60°C | Slowly rises |
 | Heater outlet air | 70–80°C | Drops (no flow) |
-| PTC aluminum body | **70–90°C** | **150°C+** (rapid) |
+| PTC aluminum body | **150–200°C** | **200°C** (PTC max) |
+| M3 screw on PTC body | **100–140°C** (estimated) | **150°C+** (rapid) |
 
-With KSD mounted directly on the PTC metal body:
-- **75°C** — will false-trigger during normal operation at higher chamber temps → cycling on/off
-- **85°C** — still risks false triggers when targeting 60°C chamber
-- **95–110°C** — workable but narrow margins
-- **120°C** — **optimal**: well above normal operation (70–90°C), but responds instantly to
-  fan failure (PTC reaches 150°C+ within seconds). 140°C would be too close to PTC max.
+With KSD mounted on the M3 screw:
+- **75°C** — will false-trigger immediately → heater cannot operate
+- **85°C** — will false-trigger within minutes
+- **120°C** — **may false-trigger** during normal operation at higher chamber targets.
+  In testing, KSD 120°C mounted on the PTC screw tripped during normal heating to 50°C chamber.
+- **140°C** — **recommended for screw mounting**: above normal screw temperature, but responds
+  quickly to fan failure when PTC body climbs toward 200°C.
+
+> **⚠️ Important finding:** Our initial estimate of 70–90°C for the PTC body during normal
+> operation was too low. The PTC body operates much closer to its rated consistency temperature
+> (200°C). The screw temperature depends on heat conduction vs. convective cooling from the fan.
+> If KSD 120°C triggers during normal operation, upgrade to 140°C.
 
 ### Mounting Position
 
-The KSD9700 120°C NC is mounted **under one of the M3 screws that secure the PTC element
+The KSD9700 NC is mounted **under one of the M3 screws that secure the PTC element
 to the ABS housing**. This provides:
-- Direct metal-to-metal thermal contact with the PTC body
+- Direct metal-to-metal thermal contact via the screw
 - Mechanical attachment without additional adhesive
-- Fastest possible response to PTC overheating
+- Fast response to PTC overheating
 
 **Mounting steps:**
 1. Remove one of the 4× M3 screws holding the PTC to the housing
 2. Place the KSD9700 metal tab under the screw head
 3. Tighten the screw — ensures firm thermal contact
-4. Optionally add a thin thermal pad between KSD and PTC for consistent contact
+4. Optionally add a thin thermal pad between KSD and screw for consistent contact
 
-> **Note:** A thin layer of thermal paste between the KSD body and the PTC surface
+> **Note:** A thin layer of thermal paste between the KSD body and the metal surface
 > further improves thermal coupling and response time.
 
 ### Wiring
@@ -148,6 +201,10 @@ The KSD is wired **in series** with the PTC heater power line:
 ```
 +24V → FUSE → MOSFET VOUT+ → KSD → PTC (+) → PTC (−) → MOSFET VOUT− → GND
 ```
+
+> **Fuse placement:** The fuse can be placed before or after the MOSFET — both protect
+> against short circuits. Placing it after the MOSFET (e.g. `+24V → MOSFET VOUT+ → FUSE → KSD → PTC`)
+> is equally valid and may be more convenient depending on your wiring layout.
 
 ---
 
@@ -181,10 +238,6 @@ For a chamber heater (where temperature changes slowly), a longer smoothing wind
 ```ini
 smooth_time: 10
 ```
-
-> **Note:** In our testing, `smooth_time` alone was not sufficient to eliminate ADC noise
-> on the Pico 2. The 100nF capacitor is the recommended primary fix. Use `smooth_time`
-> as an additional measure.
 
 ---
 
@@ -246,7 +299,7 @@ smooth_time: 10
                   VOUT+     VOUT-               VOUT+     VOUT-
                     │         │                    │         │
                  [KSD9700]    │                  FAN +     FAN -
-                  120°C NC    │                    │         │
+                  120/140°C   │                    │         │
                     │         │                 [7530 FAN]   │
                   PTC +     PTC -                  │         │
                     │         │                    └────┬────┘
@@ -449,7 +502,7 @@ killing your print mid-job.
 These relaxed settings effectively disable the software verification for the chamber heater.
 This is safe because:
 - **Layer 1:** Klipper `max_temp: 80` still triggers emergency shutdown if the sensor reads too high
-- **Layer 2:** KSD9700 120°C physically disconnects heater power on PTC overheat
+- **Layer 2:** KSD9700 120–140°C physically disconnects heater power on PTC overheat
 - **Layer 3:** PTC element is self-regulating (cannot overheat by design)
 - **Layer 4:** 15A fuse protects against short circuits
 
@@ -586,6 +639,59 @@ COOL_CHAMBER
 
 ---
 
+## Enclosure Heating Performance
+
+### Expected Performance (IKEA LACK Enclosure)
+
+Tested with a typical LACK table enclosure (~55×55×45 cm, ~136 liters):
+- MDF back panel with 700°C thermal insulation mat
+- 3mm plexiglass sides, sealed with EPDM tape
+- Small cable pass-through holes (~3–5 cm) at back and bottom
+- Front door (hinged plexiglass)
+
+**Heating times (200W PTC, from ~20°C ambient):**
+
+| Target | Time | Notes |
+|--------|------|-------|
+| 40°C | ~10–15 min | Easy to reach |
+| 50°C | ~20–30 min | Approaching thermal equilibrium |
+| 55–60°C | 30–45 min | Requires sealed doors + bed assist |
+
+### Why It Takes So Long
+
+The 200W PTC must heat not just air (~136 liters) but also the enclosure walls — plexiglass,
+MDF, table surface. These absorb significant thermal energy. Additionally, PTC heaters are
+self-regulating: as the element heats up, its resistance increases and power output drops.
+At chamber temperatures around 50°C, actual power output may be only 100–120W.
+
+Heat losses through unsealed gaps (especially the front door) create thermal equilibrium
+where heat in = heat out, limiting maximum temperature.
+
+### Tips to Improve Heating
+
+1. **Seal the front door with EPDM tape** — this is the single biggest improvement.
+   Unsealed door acts as a chimney: hot air escapes at the top, cold air enters at the bottom.
+   Sealing can add +5–10°C to your maximum temperature.
+
+2. **Enable heated bed assist** — uncomment `M140 S100` in the M191 macro. The heated bed
+   adds 200W+ of heating directly inside the chamber. This dramatically speeds up heat-soaking
+   and helps reach 55–60°C.
+
+3. **Seal cable pass-through holes** — use mineral wool, felt, or silicone plugs around cables.
+
+4. **Pre-heat before printing** — start chamber heating 15–20 minutes before the print.
+   Use OrcaSlicer's automatic M191 wait, or trigger manually with `HEAT_CHAMBER TEMP=55`.
+
+### Watermark Behavior at Thermal Equilibrium
+
+At temperatures near the enclosure's thermal limit, the heater may run at 100% continuously
+without overshooting. This is normal — watermark control only turns off the heater when
+temperature exceeds the target. If heat losses equal heat input, the chamber temperature
+stabilizes just below target and the heater stays on. This does not harm the PTC element
+(it is self-regulating) and is the expected steady-state behavior.
+
+---
+
 ## Safety Layers
 
 The system has 5 independent safety layers:
@@ -594,21 +700,25 @@ The system has 5 independent safety layers:
 |---|---|---|---|
 | 1 | Software | Klipper watermark control | Regulates temperature to target ±2°C |
 | 2 | Software | Klipper `max_temp: 80` | Emergency shutdown if sensor reads >80°C |
-| 3 | Hardware | KSD9700 **120°C NC** | Physically disconnects heater power on PTC overheat |
+| 3 | Hardware | KSD9700 **120–140°C NC** | Physically disconnects heater power on PTC overheat |
 | 4 | Hardware | 15A fuse | Protects against short circuit |
 | 5 | Software | `heater_fan` | Fan always runs when heater is active + auto cooldown |
 
-### Why 120°C KSD is Safe Despite Higher Threshold
+### Why 120–140°C KSD is Safe Despite Higher Threshold
 
 The Klipper `max_temp: 80` (Layer 2) monitors the **chamber air temperature** via the NTC
 sensor. If the chamber reaches 80°C, Klipper shuts everything down — this is the primary
 software safety.
 
-The KSD9700 120°C (Layer 3) monitors the **PTC metal body temperature**. During normal
-operation with the fan running, PTC body stays at 70–90°C. The 120°C threshold only triggers
-if the fan fails and the PTC body starts climbing toward its 150–200°C operating limit.
-This means the KSD acts as a **last-resort hardware failsafe for fan failure**, independent
-of all software.
+The KSD9700 120–140°C (Layer 3) monitors the **PTC metal body temperature** via the mounting
+screw. During normal operation with the fan running, the screw temperature depends on PTC
+body heat conduction vs. fan cooling. The KSD acts as a **last-resort hardware failsafe
+for fan failure** — if the fan stops, the screw temperature rapidly climbs past the KSD
+threshold, cutting power independently of all software.
+
+> **Note:** Start with KSD 120°C. If it false-triggers during normal heating, upgrade to
+> 140°C. The PTC consistency temperature is 200°C, so even 140°C provides a meaningful
+> safety margin for fan failure detection.
 
 ### Comparison with AC Project
 
@@ -616,7 +726,7 @@ of all software.
 |---|---|---|
 | 40A SSR | MOSFET module (AOD4184A) | DC switching, simpler |
 | 24V relay (fan interlock) | Klipper `heater_fan` | Software control with auto cooldown |
-| KSD9700 75°C NC | KSD9700 **120°C NC** | Mounted on PTC body, not outside housing |
+| KSD9700 75°C NC | KSD9700 **120–140°C NC** | Mounted on PTC screw, not outside housing |
 | NTC 100K 3950 | NTC 100K 3950 | Same — temperature sensing |
 | AC fuse (4A @ 115V) | DC fuse (15A @ 24V) | Same power, lower voltage = higher current |
 | BTT SKR Pico (RP2040) | Raspberry Pi Pico 2 (RP2350) | Full Klipper MCU |
@@ -660,6 +770,34 @@ to delete any PID values from the `SAVE_CONFIG` section at the bottom of `printe
 **Fix:** Solder 100nF ceramic capacitor between GP26 and GND on the Pico 2. See
 [Thermistor Noise Filtering](#thermistor-noise-filtering) section.
 
+### KSD9700 Thermal Cutoff False-Triggers During Normal Operation
+
+**Symptom:** Heater cuts off unexpectedly during normal heating. KSD9700 trips even though
+chamber temperature is within normal range (40–60°C). Heater works again after KSD cools down.
+
+**Cause:** The PTC element has a consistency temperature of ~200°C. The M3 mounting screws
+conduct heat directly from the PTC body and can reach 100–140°C even during normal operation
+with the fan running. A KSD rated at 120°C or lower will false-trigger at these temperatures.
+
+**Fix:** Replace with KSD9700 **140°C NC**. If 140°C still triggers (unlikely with fan running),
+consider adding a thin thermal insulation washer between the KSD and the screw head to reduce
+heat transfer while maintaining thermal coupling for emergency detection.
+
+### Fuse Melting Inside Heater Housing
+
+**Symptom:** Glass fuse blows or melts despite current being within rating. Fuse holder
+feels warm/hot to the touch. Fuse glass may look intact but element is melted.
+
+**Cause:** The NexGen3D heater housing interior reaches 100–150°C+ during operation. Glass
+fuses derate significantly at elevated temperatures — a 15A fuse at 120°C ambient may
+blow at only 8–10A, which is the normal PTC operating current. Cheap fuse holders with
+thin spring contacts add resistive heating (I²R) on top of ambient heat.
+
+**Fix:**
+1. Move the fuse **outside** the heater housing, near the PSU at room temperature
+2. Replace glass fuse + holder with an **automotive MIDI 15A** fuse in a hermetric holder
+3. MIDI blade contacts have much lower resistance than glass fuse spring clips
+
 ### SAVE_CONFIG Overrides Watermark Setting
 
 **Symptom:** You set `control: watermark` in printer.cfg but Klipper still uses PID.
@@ -676,12 +814,12 @@ block from the `#*# <--- SAVE_CONFIG --->` section at the bottom of the file.
 
 ### Preparation
 - [ ] Open NexGen3D heater and separate fan/PTC wiring into 4 independent wires
-- [ ] Use 1.5 mm² silicone/PTFE wire for all power connections
-- [ ] Mount KSD9700 120°C NC thermal cutoff under M3 screw on PTC aluminum body
+- [ ] Use 1.5 mm² silicone wire for heater power, 0.5 mm² silicone for fan (see [Wire & Cable Recommendations](#wire--cable-recommendations))
+- [ ] Mount KSD9700 120°C or 140°C NC thermal cutoff under M3 screw on PTC aluminum body
 - [ ] Mount NTC 100K thermistor in the center of the printer enclosure (not on heater)
 
 ### Electrical Assembly
-- [ ] Wire heater line: +24V → fuse 15A → MOSFET M1 (VIN+→VOUT+) → KSD9700 → PTC (+) → PTC (−) → MOSFET M1 (VOUT−) → GND
+- [ ] Wire heater line: +24V → MIDI fuse 15A (external, near PSU) → MOSFET M1 (VIN+→VOUT+) → KSD9700 → PTC (+) → PTC (−) → MOSFET M1 (VOUT−) → GND
 - [ ] Wire fan line: +24V → MOSFET M2 (VIN+→VOUT+) → fan (+) → fan (−) → MOSFET M2 (VOUT−) → GND
 - [ ] Connect MOSFET M1 SIG → Pico GP15, VCC → 3.3V, GND → GND
 - [ ] Connect MOSFET M2 SIG → Pico GP14, VCC → 3.3V, GND → GND
